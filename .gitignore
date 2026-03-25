@@ -1,0 +1,17 @@
+__pycache__/
+.ipynb_checkpoints/
+node_modules/
+
+*.html
+*.pdf
+*.txt
+package.json
+package-lock.json
+
+memory.md
+guidelines.txt
+guidelines_2025.txt
+colab_page.html
+project1_notebook.html
+
+.DS_Store
