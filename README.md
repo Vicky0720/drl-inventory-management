@@ -1,4 +1,4 @@
-# IE5604 Project 1 说明
+# IE5604 Project 说明
 
 ## 项目简介
 
