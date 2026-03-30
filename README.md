@@ -63,9 +63,6 @@
 
 ### 项目文档
 
-- `TEAM_EXECUTION_PLAN.md`
-  - 三人分工与执行路线
-
 - `REPORT_TEMPLATE.md`
   - 报告结构模板
 
