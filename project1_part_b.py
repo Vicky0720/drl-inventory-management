@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -88,6 +89,33 @@ class QNetwork(nn.Module):
         return self.net(x)
 
 
+class DuelingQNetwork(nn.Module):
+    """Dueling Q-network with shared trunk and separate value/advantage heads."""
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_sizes: Sequence[int] = (128, 128),
+    ) -> None:
+        super().__init__()
+        trunk_layers: List[nn.Module] = []
+        in_dim = state_dim
+        for hidden_dim in hidden_sizes:
+            trunk_layers.append(nn.Linear(in_dim, hidden_dim))
+            trunk_layers.append(nn.ReLU())
+            in_dim = hidden_dim
+        self.trunk = nn.Sequential(*trunk_layers)
+        self.value_head = nn.Linear(in_dim, 1)
+        self.adv_head = nn.Linear(in_dim, action_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.trunk(x)
+        value = self.value_head(features)
+        advantage = self.adv_head(features)
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
+
+
 class Policy(nn.Module):
     """Categorical policy network for discrete order quantities."""
 
@@ -135,6 +163,7 @@ class ValueNetwork(nn.Module):
 class TrainLogs:
     losses: List[float]
     eval_costs: List[float]
+    best_eval_cost: Optional[float] = None
 
 
 class DQN_agent:
@@ -151,6 +180,11 @@ class DQN_agent:
         epsilon_end: float = 0.05,
         epsilon_decay: float = 0.995,
         target_update_freq: int = 50,
+        tau: float = 1.0,
+        double_q: bool = True,
+        grad_clip: Optional[float] = 5.0,
+        dueling: bool = False,
+        reward_scale: float = 1.0,
     ) -> None:
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -159,12 +193,25 @@ class DQN_agent:
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
         self.target_update_freq = target_update_freq
+        self.tau = float(tau)
+        self.double_q = bool(double_q)
+        self.grad_clip = grad_clip
+        self.reward_scale = float(reward_scale)
 
-        self.q_net = QNetwork(state_dim, action_dim, hidden_sizes).to(DEVICE)
-        self.target_q_net = QNetwork(state_dim, action_dim, hidden_sizes).to(DEVICE)
+        network_cls = DuelingQNetwork if dueling else QNetwork
+        self.q_net = network_cls(state_dim, action_dim, hidden_sizes).to(DEVICE)
+        self.target_q_net = network_cls(state_dim, action_dim, hidden_sizes).to(DEVICE)
         self.target_q_net.load_state_dict(self.q_net.state_dict())
         self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=lr)
         self.train_steps = 0
+
+    def _sync_target_network(self, hard: bool = False) -> None:
+        if hard or self.tau >= 1.0:
+            self.target_q_net.load_state_dict(self.q_net.state_dict())
+            return
+        with torch.no_grad():
+            for target_param, source_param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
+                target_param.data.mul_(1.0 - self.tau).add_(self.tau * source_param.data)
 
     def select_action(self, state: Sequence[float], greedy: bool = False) -> int:
         if (not greedy) and np.random.rand() < self.epsilon:
@@ -179,17 +226,25 @@ class DQN_agent:
         current_q = q_values.gather(1, batch["actions"].unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            next_q = self.target_q_net(batch["next_states"]).max(dim=1).values
+            if self.double_q:
+                next_actions = self.q_net(batch["next_states"]).argmax(dim=1, keepdim=True)
+                next_q = self.target_q_net(batch["next_states"]).gather(1, next_actions).squeeze(1)
+            else:
+                next_q = self.target_q_net(batch["next_states"]).max(dim=1).values
             target_q = batch["rewards"] + self.gamma * (1.0 - batch["dones"]) * next_q
 
-        loss = F.mse_loss(current_q, target_q)
+        loss = F.smooth_l1_loss(current_q, target_q)
         self.optimizer.zero_grad()
         loss.backward()
+        if self.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=float(self.grad_clip))
         self.optimizer.step()
 
         self.train_steps += 1
         if self.train_steps % self.target_update_freq == 0:
-            self.target_q_net.load_state_dict(self.q_net.state_dict())
+            self._sync_target_network(hard=self.tau >= 1.0)
+        elif self.tau < 1.0:
+            self._sync_target_network(hard=False)
 
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
         return float(loss.item())
@@ -204,17 +259,23 @@ class DQN_agent:
         warmup_steps: int = 200,
         eval_every: int = 20,
         eval_runs: int = 20,
+        eval_horizon: Optional[int] = None,
+        restore_best: bool = True,
     ) -> TrainLogs:
         losses: List[float] = []
         eval_costs: List[float] = []
+        best_eval_cost: Optional[float] = None
+        best_q_state = None
+        best_target_state = None
 
         total_steps = 0
+        eval_horizon = steps_per_episode if eval_horizon is None else int(eval_horizon)
         for episode in range(episodes):
             state = env.reset()
             for _ in range(steps_per_episode):
                 action = self.select_action(state)
                 next_state, cost = env.step(state, action)
-                reward = -cost
+                reward = -cost / self.reward_scale
                 replay_buffer.push(state, action, reward, next_state, False)
                 state = next_state
                 total_steps += 1
@@ -225,10 +286,20 @@ class DQN_agent:
                     losses.append(loss)
 
             if (episode + 1) % eval_every == 0:
-                metrics = self.evaluate(env, horizon=steps_per_episode, n_sim=eval_runs)
-                eval_costs.append(metrics["avg_discounted_cost"])
+                metrics = self.evaluate(env, horizon=eval_horizon, n_sim=eval_runs)
+                eval_cost = metrics["avg_discounted_cost"]
+                eval_costs.append(eval_cost)
+                if best_eval_cost is None or eval_cost < best_eval_cost:
+                    best_eval_cost = float(eval_cost)
+                    if restore_best:
+                        best_q_state = copy.deepcopy(self.q_net.state_dict())
+                        best_target_state = copy.deepcopy(self.target_q_net.state_dict())
 
-        return TrainLogs(losses=losses, eval_costs=eval_costs)
+        if restore_best and best_q_state is not None and best_target_state is not None:
+            self.q_net.load_state_dict(best_q_state)
+            self.target_q_net.load_state_dict(best_target_state)
+
+        return TrainLogs(losses=losses, eval_costs=eval_costs, best_eval_cost=best_eval_cost)
 
     def evaluate(self, env: Lostsale, horizon: int = 1000, n_sim: int = 100) -> Dict[str, float]:
         from project1_part_a import evaluate_policy
@@ -367,4 +438,3 @@ class AC_agent:
         from project1_part_a import evaluate_policy
 
         return evaluate_policy(env, lambda state: self.select_action(state, greedy=True), horizon=horizon, n_sim=n_sim)
-

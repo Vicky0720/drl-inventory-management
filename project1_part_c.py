@@ -13,7 +13,28 @@ from project1_part_a import (
     make_heuristic_policy,
     run_heuristic_benchmarks,
 )
-from project1_part_b import DEVICE, Policy, to_tensor
+from project1_part_b import AC_agent, DEVICE, DQN_agent, Policy, Replaybuffer, to_tensor
+
+
+def set_global_seeds(seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def build_agents_for_env(
+    env: Lostsale,
+    dqn_kwargs: Optional[Dict] = None,
+    ac_kwargs: Optional[Dict] = None,
+    pg_kwargs: Optional[Dict] = None,
+    replay_capacity: int = 10000,
+):
+    state_dim = env.lead + 1
+    action_dim = env.max_order + 1
+    dqn_agent = DQN_agent(state_dim=state_dim, action_dim=action_dim, gamma=env.discount, **(dqn_kwargs or {}))
+    ac_agent = AC_agent(state_dim=state_dim, action_dim=action_dim, gamma=env.discount, **(ac_kwargs or {}))
+    pg_agent = PG_agent(state_dim=state_dim, action_dim=action_dim, gamma=env.discount, **(pg_kwargs or {}))
+    replay_buffer = Replaybuffer(capacity=replay_capacity, state_dim=state_dim)
+    return dqn_agent, ac_agent, pg_agent, replay_buffer
 
 
 class PG_agent:
@@ -133,6 +154,9 @@ def train_all_drl_agents(
     steps_per_episode: int = 100,
     eval_every: int = 20,
     eval_runs: int = 20,
+    dqn_train_kwargs: Optional[Dict] = None,
+    ac_train_kwargs: Optional[Dict] = None,
+    pg_train_kwargs: Optional[Dict] = None,
 ) -> Dict[str, Dict]:
     dqn_logs = dqn_agent.train(
         env,
@@ -141,6 +165,7 @@ def train_all_drl_agents(
         steps_per_episode=steps_per_episode,
         eval_every=eval_every,
         eval_runs=eval_runs,
+        **(dqn_train_kwargs or {}),
     )
     ac_logs = ac_agent.train(
         env,
@@ -148,6 +173,7 @@ def train_all_drl_agents(
         steps_per_episode=steps_per_episode,
         eval_every=eval_every,
         eval_runs=eval_runs,
+        **(ac_train_kwargs or {}),
     )
     pg_logs = pg_agent.train(
         env,
@@ -155,6 +181,7 @@ def train_all_drl_agents(
         steps_per_episode=steps_per_episode,
         eval_every=eval_every,
         eval_runs=eval_runs,
+        **(pg_train_kwargs or {}),
     )
 
     return {
@@ -179,10 +206,10 @@ def train_all_drl_agents(
 def run_single_setting(
     l: int,
     p: float,
-    dqn_agent,
-    ac_agent,
-    pg_agent: PG_agent,
-    replay_buffer,
+    dqn_agent=None,
+    ac_agent=None,
+    pg_agent: Optional[PG_agent] = None,
+    replay_buffer=None,
     gamma: float = 0.99,
     demand_lambda: float = 5.0,
     max_order: int = 30,
@@ -192,7 +219,15 @@ def run_single_setting(
     eval_every: int = 20,
     eval_runs: int = 20,
     seed: int = 42,
+    dqn_kwargs: Optional[Dict] = None,
+    ac_kwargs: Optional[Dict] = None,
+    pg_kwargs: Optional[Dict] = None,
+    dqn_train_kwargs: Optional[Dict] = None,
+    ac_train_kwargs: Optional[Dict] = None,
+    pg_train_kwargs: Optional[Dict] = None,
+    replay_capacity: int = 10000,
 ) -> Dict[str, Dict]:
+    set_global_seeds(seed)
     env = Lostsale(
         buffer_size=10,
         gamma=gamma,
@@ -206,6 +241,15 @@ def run_single_setting(
         "S_values": range(0, max_order + 1),
         "r_values": range(0, max_order + 1),
     }
+
+    if dqn_agent is None or ac_agent is None or pg_agent is None or replay_buffer is None:
+        dqn_agent, ac_agent, pg_agent, replay_buffer = build_agents_for_env(
+            env,
+            dqn_kwargs=dqn_kwargs,
+            ac_kwargs=ac_kwargs,
+            pg_kwargs=pg_kwargs,
+            replay_capacity=replay_capacity,
+        )
 
     heuristics = run_heuristic_benchmarks(
         env,
@@ -226,13 +270,79 @@ def run_single_setting(
         steps_per_episode=steps_per_episode,
         eval_every=eval_every,
         eval_runs=eval_runs,
+        dqn_train_kwargs=dqn_train_kwargs,
+        ac_train_kwargs=ac_train_kwargs,
+        pg_train_kwargs=pg_train_kwargs,
     )
 
     return {
-        "config": {"l": l, "p": p, "gamma": gamma, "demand_lambda": demand_lambda},
+        "config": {
+            "l": l,
+            "p": p,
+            "gamma": gamma,
+            "demand_lambda": demand_lambda,
+            "max_order": max_order,
+            "episodes": episodes,
+            "steps_per_episode": steps_per_episode,
+            "eval_every": eval_every,
+            "eval_runs": eval_runs,
+            "seed": seed,
+            "dqn_kwargs": dqn_kwargs or {},
+            "ac_kwargs": ac_kwargs or {},
+            "pg_kwargs": pg_kwargs or {},
+            "dqn_train_kwargs": dqn_train_kwargs or {},
+            "ac_train_kwargs": ac_train_kwargs or {},
+            "pg_train_kwargs": pg_train_kwargs or {},
+        },
         "heuristics": heuristics,
         "drl": drl_results,
     }
+
+
+def run_batch_settings(
+    settings: Sequence[Tuple[int, float]],
+    gamma: float = 0.99,
+    demand_lambda: float = 5.0,
+    max_order: int = 30,
+    heuristic_search_space: Optional[Dict[str, Sequence[int]]] = None,
+    episodes: int = 200,
+    steps_per_episode: int = 100,
+    eval_every: int = 20,
+    eval_runs: int = 20,
+    base_seed: int = 42,
+    dqn_kwargs: Optional[Dict] = None,
+    ac_kwargs: Optional[Dict] = None,
+    pg_kwargs: Optional[Dict] = None,
+    dqn_train_kwargs: Optional[Dict] = None,
+    ac_train_kwargs: Optional[Dict] = None,
+    pg_train_kwargs: Optional[Dict] = None,
+    replay_capacity: int = 10000,
+) -> List[Dict[str, Dict]]:
+    results: List[Dict[str, Dict]] = []
+    for idx, (l, p) in enumerate(settings):
+        results.append(
+            run_single_setting(
+                l=l,
+                p=p,
+                gamma=gamma,
+                demand_lambda=demand_lambda,
+                max_order=max_order,
+                heuristic_search_space=heuristic_search_space,
+                episodes=episodes,
+                steps_per_episode=steps_per_episode,
+                eval_every=eval_every,
+                eval_runs=eval_runs,
+                seed=base_seed + idx,
+                dqn_kwargs=dqn_kwargs,
+                ac_kwargs=ac_kwargs,
+                pg_kwargs=pg_kwargs,
+                dqn_train_kwargs=dqn_train_kwargs,
+                ac_train_kwargs=ac_train_kwargs,
+                pg_train_kwargs=pg_train_kwargs,
+                replay_capacity=replay_capacity,
+            )
+        )
+    return results
 
 
 def summarize_results(result: Dict[str, Dict]) -> List[Dict[str, object]]:
@@ -337,4 +447,3 @@ def heuristic_guided_action(
         demand_lambda=env.demand_lambda,
         **best["params"],
     )
-

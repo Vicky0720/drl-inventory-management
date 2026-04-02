@@ -1,0 +1,15 @@
+l,p,method,family,avg_discounted_cost,std,details,profile
+2,4,Basestock,heuristic,6.380515875859107,0.32186862777743563,"{""S"": 10}",baseline
+2,4,Cappedbasestock,heuristic,4.8034514135271,0.3329290214912646,"{""S"": 17, ""r"": 5}",baseline
+2,4,Constantorder,heuristic,5.605929698835853,0.4660994710028396,"{""r"": 4}",baseline
+2,4,Myopic1,heuristic,5.333750630438617,0.26671801968126696,"{""max_order"": 30}",baseline
+2,4,DQN,drl,6.909657514779059,0.381017480498216,DRL,baseline
+2,4,ActorCritic,drl,16.04699081255447,0.5060658920413291,DRL,baseline
+2,4,PolicyGradient,drl,5.831920257231466,0.5799343917026419,DRL,baseline
+2,4,Basestock,heuristic,6.520842911580955,0.23619606634138177,"{""S"": 11}",tuned
+2,4,Cappedbasestock,heuristic,4.655462163831464,0.27674825846838164,"{""S"": 16, ""r"": 5}",tuned
+2,4,Constantorder,heuristic,5.615125821905417,0.4805452967868053,"{""r"": 4}",tuned
+2,4,Myopic1,heuristic,5.402369205240418,0.30266488315866236,"{""max_order"": 30}",tuned
+2,4,DQN,drl,5.850793424011168,0.28236010470941697,DRL,tuned
+2,4,ActorCritic,drl,20.197413031756604,0.7605452483814464,DRL,tuned
+2,4,PolicyGradient,drl,1322.1640554941507,263.86321543047137,DRL,tuned

@@ -14,4 +14,11 @@ guidelines_2025.txt
 colab_page.html
 project1_notebook.html
 
+experiment_outputs/**
+!experiment_outputs/
+!experiment_outputs/batch/
+!experiment_outputs/tuning/
+!experiment_outputs/**/*.md
+!experiment_outputs/**/*.csv
+
 .DS_Store
